@@ -1,0 +1,18 @@
+{
+  "name": "medusa-railway-media-proxy",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Read-only public reads from the private bucket Medusa uploads to",
+  "license": "MIT",
+  "type": "module",
+  "main": "server.mjs",
+  "scripts": {
+    "start": "node server.mjs"
+  },
+  "dependencies": {
+    "aws4fetch": "^1.0.20"
+  },
+  "engines": {
+    "node": ">=22"
+  }
+}

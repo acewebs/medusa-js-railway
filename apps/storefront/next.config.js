@@ -13,6 +13,9 @@ const S3_PATHNAME = process.env.MEDUSA_CLOUD_S3_PATHNAME
  */
 const nextConfig = {
   reactStrictMode: true,
+  // Traced server bundle, so the runtime image carries only what the app
+  // imports instead of the whole workspace node_modules.
+  output: "standalone",
   async headers() {
     return [
       {

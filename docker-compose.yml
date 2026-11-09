@@ -1,0 +1,208 @@
+# Mirrors the Railway topology rather than being a convenience dev stack, so the
+# entrypoints, the worker's wait on the server, and the media proxy are all under
+# test locally. See docs/local-testing.md.
+#
+#   docker compose up -d                              Postgres, Redis, MinIO only
+#   docker compose --profile stack up -d --build      the whole topology
+
+name: medusa-railway
+
+x-backend-env: &backend-env
+  DATABASE_URL: postgres://medusa:medusa@postgres:5432/medusa
+  REDIS_URL: redis://default:medusa@redis:6379
+  JWT_SECRET: ${JWT_SECRET:-local-jwt-secret}
+  COOKIE_SECRET: ${COOKIE_SECRET:-local-cookie-secret}
+  STORE_CORS: ${STORE_CORS:-http://localhost:8000}
+  ADMIN_CORS: ${ADMIN_CORS:-http://localhost:9000}
+  AUTH_CORS: ${AUTH_CORS:-http://localhost:8000,http://localhost:9000}
+  MEDUSA_BACKEND_URL: ${MEDUSA_BACKEND_URL:-http://localhost:9000}
+  MEDUSA_PUBLISHABLE_KEY: ${MEDUSA_PUBLISHABLE_KEY:-pk_local_development_key_0000000000000000}
+  MEDUSA_ADMIN_EMAIL: ${MEDUSA_ADMIN_EMAIL:-admin@example.com}
+  MEDUSA_ADMIN_PASSWORD: ${MEDUSA_ADMIN_PASSWORD:-supersecret}
+  SEED_DEMO_DATA: ${SEED_DEMO_DATA:-true}
+  # MinIO, standing in for a Railway Storage Bucket. Path style is a local
+  # requirement: Railway buckets are virtual hosted.
+  S3_BUCKET: medusa-media
+  S3_ENDPOINT: http://minio:9000
+  S3_REGION: us-east-1
+  S3_ACCESS_KEY_ID: medusa
+  S3_SECRET_ACCESS_KEY: medusamedusa
+  S3_FORCE_PATH_STYLE: "true"
+  # Where uploaded files are served from. Persisted onto products, so it has to
+  # be the address a browser can reach, not the private one.
+  S3_FILE_URL: ${S3_FILE_URL:-http://localhost:9300}
+
+services:
+  # Railway's own Postgres image, not the stock one, because it serves TLS. Medusa
+  # turns SSL on for any database URL that is not localhost, so a plain postgres
+  # container makes every connection hang here and work on Railway, which is the
+  # wrong way round for a local test.
+  postgres:
+    image: ghcr.io/railwayapp-templates/postgres-ssl:18
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: medusa
+      POSTGRES_PASSWORD: medusa
+      POSTGRES_DB: medusa
+      # The image's wrapper requires PGDATA under the mounted volume. Same value
+      # Railway's own Postgres template sets.
+      PGDATA: /var/lib/postgresql/data/pgdata
+    ports:
+      - '${POSTGRES_PORT:-5432}:5432'
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U medusa']
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  # Password protected like Railway's Redis, so the URL carries credentials in
+  # both places.
+  redis:
+    image: redis:8.2-alpine
+    restart: unless-stopped
+    command: redis-server --requirepass medusa
+    ports:
+      - '${REDIS_PORT:-6379}:6379'
+    volumes:
+      - redisdata:/data
+    healthcheck:
+      test: ['CMD', 'redis-cli', '-a', 'medusa', 'ping']
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  # 9100, not 9000: Medusa owns 9000 and MinIO's default would collide.
+  minio:
+    image: minio/minio:latest
+    restart: unless-stopped
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: medusa
+      MINIO_ROOT_PASSWORD: medusamedusa
+    ports:
+      - '${MINIO_PORT:-9100}:9000'
+      - '${MINIO_CONSOLE_PORT:-9101}:9001'
+    volumes:
+      - miniodata:/data
+    healthcheck:
+      test: ['CMD', 'mc', 'ready', 'local']
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  createbucket:
+    image: minio/mc:latest
+    depends_on:
+      minio:
+        condition: service_healthy
+    entrypoint: >
+      /bin/sh -c "
+      mc alias set local http://minio:9000 medusa medusamedusa;
+      mc mb --ignore-existing local/medusa-media;
+      "
+
+  media-proxy:
+    profiles: ['stack']
+    build:
+      context: .
+      dockerfile: docker/media-proxy.Dockerfile
+    restart: unless-stopped
+    depends_on:
+      createbucket:
+        condition: service_completed_successfully
+    environment:
+      PORT: 9200
+      S3_BUCKET: medusa-media
+      S3_ENDPOINT: http://minio:9000
+      S3_REGION: us-east-1
+      S3_ACCESS_KEY_ID: medusa
+      S3_SECRET_ACCESS_KEY: medusamedusa
+      S3_FORCE_PATH_STYLE: 'true'
+    ports:
+      - '${MEDIA_PROXY_PORT:-9300}:9200'
+
+  # This and medusa-worker are both the backend, same image, differing only in
+  # MEDUSA_WORKER_MODE. Those values are Medusa's own: `server` serves the API
+  # and admin, `worker` runs jobs and subscribers.
+  medusa-backend:
+    profiles: ['stack']
+    build:
+      context: .
+      dockerfile: docker/backend.Dockerfile
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      createbucket:
+        condition: service_completed_successfully
+    environment:
+      <<: *backend-env
+      PORT: 9000
+      MEDUSA_WORKER_MODE: server
+      MEDUSA_RUN_MIGRATIONS: 'true'
+    ports:
+      - '${MEDUSA_PORT:-9000}:9000'
+
+  # Same image, different mode. Waits for medusa-backend, which only opens its
+  # port once migrations and bootstrap have finished.
+  medusa-worker:
+    profiles: ['stack']
+    build:
+      context: .
+      dockerfile: docker/backend.Dockerfile
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    environment:
+      <<: *backend-env
+      PORT: 9000
+      MEDUSA_WORKER_MODE: worker
+      DISABLE_MEDUSA_ADMIN: 'true'
+      MEDUSA_RUN_MIGRATIONS: 'false'
+      MEDUSA_WAIT_FOR: medusa-backend:9000
+
+  # Host networking, locally only. The starter reads one backend URL and Next
+  # bakes it into the bundle, so the browser and the storefront's own server have
+  # to agree on it. On Railway they do, because the backend has a public domain.
+  # Locally only the host has one, so the container shares the host's network
+  # stack and http://localhost:9000 means the same thing in both places.
+  #
+  # Linux only. On Docker Desktop, either enable host networking or point
+  # NEXT_PUBLIC_MEDUSA_BACKEND_URL at your machine's LAN address and drop this.
+  storefront:
+    profiles: ['stack']
+    network_mode: host
+    build:
+      context: .
+      dockerfile: docker/storefront.Dockerfile
+      args:
+        # Inlined into the client bundle at build time, which is why they are
+        # build arguments and not just environment. Same two names Railway sets.
+        NEXT_PUBLIC_MEDUSA_BACKEND_URL: ${NEXT_PUBLIC_MEDUSA_BACKEND_URL:-http://localhost:9000}
+        NEXT_PUBLIC_MEDUSA_PUBLISHABLE_KEY: ${MEDUSA_PUBLISHABLE_KEY:-pk_local_development_key_0000000000000000}
+        NEXT_PUBLIC_DEFAULT_REGION: ${NEXT_PUBLIC_DEFAULT_REGION:-dk}
+        NEXT_PUBLIC_BASE_URL: ${NEXT_PUBLIC_BASE_URL:-http://localhost:8000}
+        # Empty unless you are testing Stripe. The backend's STRIPE_API_KEY is
+        # the secret key; this is its publishable counterpart, and the checkout
+        # throws without it once a Stripe payment session exists.
+        NEXT_PUBLIC_STRIPE_KEY: ${NEXT_PUBLIC_STRIPE_KEY:-}
+    restart: unless-stopped
+    environment:
+      PORT: 8000
+      NEXT_PUBLIC_MEDUSA_BACKEND_URL: ${NEXT_PUBLIC_MEDUSA_BACKEND_URL:-http://localhost:9000}
+      NEXT_PUBLIC_MEDUSA_PUBLISHABLE_KEY: ${MEDUSA_PUBLISHABLE_KEY:-pk_local_development_key_0000000000000000}
+      NEXT_PUBLIC_DEFAULT_REGION: ${NEXT_PUBLIC_DEFAULT_REGION:-dk}
+      NEXT_PUBLIC_BASE_URL: ${NEXT_PUBLIC_BASE_URL:-http://localhost:8000}
+      NEXT_PUBLIC_STRIPE_KEY: ${NEXT_PUBLIC_STRIPE_KEY:-}
+
+volumes:
+  pgdata:
+  redisdata:
+  miniodata:
