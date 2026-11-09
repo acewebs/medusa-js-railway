@@ -10,8 +10,8 @@ That starter is not an arbitrary choice. It is what `create-medusa-app` clones:
 points at it. The standalone `nextjs-starter-medusa` the older Railway templates
 build on was archived on 2 July 2026.
 
-**Baseline: `4a1d53dc434ed124a78c4e2c9f312e1f47d4e9eb`** (2026-11-04, Medusa
-2.22.3). Update this line on every sync.
+**Baseline: `6834ac6b6455474b114ff269f36006a8d9fabccf`** (2026-11-08, Medusa
+2.22.4). Update this line on every sync.
 
 ## The model
 
