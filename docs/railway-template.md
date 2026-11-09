@@ -5,13 +5,12 @@ needs none of this.
 
 ## Two ways in, and they do not share configuration
 
-`.railway/railway.ts` describes the four services plus Postgres and Redis, and is
-applied with `railway config apply`. The bucket is created by
-`scripts/railway-bucket.sh`, because a `bucket()` declared in the IaC file reports
-"applied" and then does not exist (Railway CLI 5.49.2), leaving every `S3_`
-reference resolving to an empty string. Those five variables are marked
-`preserve()` in the IaC file so a later apply does not overwrite what the script
-set.
+`.railway/railway.ts` describes everything, including the bucket, and is applied
+with `railway config apply`. Verified on CLI **5.71.0**, where a `bucket()`
+declaration genuinely creates the bucket and its `${{Bucket.*}}` variables
+resolve to real credentials. On 5.49.2 it reported success and created nothing,
+which is why older notes describe a separate bucket script; that script is gone,
+so an older CLI is not supported here.
 
 The template composer reads neither file. A published template carries only what
 was entered in the composer, so everything below has to be re-entered there. Keep
@@ -154,24 +153,34 @@ The services point at `acewebs/medusa-js-railway` (`REPO` in
 `.railway/railway.ts`). Change that to your own fork before applying, or the
 project deploys this repository rather than yours.
 
+The IaC needs the Railway SDK, which is deliberately **not** a project
+dependency: adding it would put our line in the `package.json` and `pnpm-lock.yaml`
+that upstream owns, and conflict on every sync. It lives in its own package
+instead, the same arrangement `media-proxy/` uses.
+
 ```bash
+npm --prefix .railway install     # the SDK that evaluates railway.ts
 railway login
 railway init
-railway config apply              # six services, variables wired
-scripts/railway-bucket.sh ams     # bucket + its five variables, three services
+railway config apply              # creates 6 services, Postgres, Redis, the bucket
 railway domain --service medusa-backend
 railway domain --service storefront
 railway domain --service media-proxy
-railway redeploy --service medusa-backend
-railway redeploy --service medusa-worker
-railway redeploy --service storefront
-railway redeploy --service media-proxy
+railway config apply              # again, now that the domains exist
 ```
 
-The domains come before the redeploys on purpose: the storefront bakes the
-backend's public domain into its bundle at build time, and the backend's CORS
-depends on the storefront's. Both resolve to empty strings until the domains
-exist.
+**Apply twice, with the domains in between.** The first apply creates the
+services and their variables but deploys nothing. Every expression built on a
+public domain (`MEDUSA_BACKEND_URL`, the three CORS variables,
+`NEXT_PUBLIC_MEDUSA_BACKEND_URL`, `S3_FILE_URL`) resolves to an empty string
+until that domain exists, and the storefront bakes its backend URL and
+publishable key into the bundle at build time, so a build started before the
+domains exist is wrong in a way no restart fixes. The second apply is what
+triggers the first deploy, by which point everything resolves.
+
+Verified end to end on 2026-11-09: six services from a cold apply, all SUCCESS in
+about 3.5 minutes, and `scripts/smoke-test.mjs` passing 17/17 against the live
+URLs.
 
 Read the resulting state back rather than trusting the command's output. Both
 `railway config apply` and template generation report success while quietly doing

@@ -1,0 +1,10 @@
+{
+  "name": "medusa-railway-iac",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Holds the Railway SDK that evaluates railway.ts, kept out of the workspace on purpose",
+  "license": "MIT",
+  "dependencies": {
+    "railway": "^3.11.0"
+  }
+}

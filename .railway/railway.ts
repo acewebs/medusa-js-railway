@@ -1,9 +1,7 @@
-import { bucket, defineRailway, github, postgres, preserve, project, redis, service } from 'railway/iac'
+import { bucket, defineRailway, github, postgres, project, redis, service } from 'railway/iac'
 
 /**
- * The whole stack, with its variables wired between the services. The bucket is
- * provisioned separately by scripts/railway-bucket.sh; see the comment on the S3_
- * variables below for why.
+ * The whole stack, with its variables wired between the services.
  *
  * Evaluated by the Railway CLI only, so it does not interfere with deploying
  * through the marketplace template or the dashboard:
@@ -16,9 +14,14 @@ import { bucket, defineRailway, github, postgres, preserve, project, redis, serv
  *
  * The template composer does not read this file. Keep docs/railway-template.md in
  * step with it by hand.
+ *
+ * Needs the Railway SDK, which lives in .railway/package.json rather than the
+ * repository's own, so upstream's manifest and lockfile stay untouched:
+ *
+ *   npm --prefix .railway install
  */
-// Must match the region passed to scripts/railway-bucket.sh. Change both together,
-// before first deploy: sjc (US West), iad (US East), ams (EU West), sin (Asia Pacific).
+// Set before the first apply: sjc (US West), iad (US East), ams (EU West),
+// sin (Asia Pacific). A bucket cannot be moved to another region afterwards.
 const BUCKET_REGION = 'ams'
 
 const REPO = 'acewebs/medusa-js-railway'
@@ -27,11 +30,9 @@ export default defineRailway((ctx) => {
   const db = postgres('Postgres')
   const cache = redis('Redis')
 
-  // Declared so that `railway config apply` adopts the bucket instead of offering
-  // to delete it, but NOT created here: a bucket() declaration reports success and
-  // creates nothing (Railway CLI 5.49.2), which is why scripts/railway-bucket.sh
-  // exists. That script names its bucket 'Bucket' and takes the same region, and
-  // the two must agree: a region cannot be changed after the bucket is created.
+  // Created here, verified on CLI 5.71.0. On 5.49.2 this reported success and
+  // created nothing, so the S3_ variables had to be set by a separate script;
+  // that is no longer true and the script is gone.
   const media = bucket('Bucket', { region: BUCKET_REGION })
 
   /**
@@ -47,14 +48,15 @@ export default defineRailway((ctx) => {
    */
   const publishableKey = `pk_${ctx.randomString('publishable-key', 32)}`
 
+  // Raw expressions rather than `media.env.*`, for the same reason as every other
+  // reference here: the expression form is the one that survives composition and
+  // is what the template composer needs anyway.
   const s3 = {
-    // Created by scripts/railway-bucket.sh, not here, for the reason above.
-    // preserve() keeps whatever that script set instead of overwriting it.
-    S3_BUCKET: preserve(),
-    S3_ENDPOINT: preserve(),
-    S3_REGION: preserve(),
-    S3_ACCESS_KEY_ID: preserve(),
-    S3_SECRET_ACCESS_KEY: preserve(),
+    S3_BUCKET: '${{Bucket.BUCKET}}',
+    S3_ENDPOINT: '${{Bucket.ENDPOINT}}',
+    S3_REGION: '${{Bucket.REGION}}',
+    S3_ACCESS_KEY_ID: '${{Bucket.ACCESS_KEY_ID}}',
+    S3_SECRET_ACCESS_KEY: '${{Bucket.SECRET_ACCESS_KEY}}',
   }
 
   // Read-only public reads from the private bucket. Railway buckets have no
@@ -82,9 +84,12 @@ export default defineRailway((ctx) => {
     ...s3,
     // Uploaded files are served through the proxy, and this URL is persisted onto
     // every product image, so it has to be the public one.
-    S3_FILE_URL: `https://${mediaProxy.env.RAILWAY_PUBLIC_DOMAIN}`,
-    // Raw Railway expressions rather than node references, because these point at
-    // services defined after this object and at the service itself. Rename a
+    S3_FILE_URL: 'https://${{media-proxy.RAILWAY_PUBLIC_DOMAIN}}',
+    // Raw Railway expressions throughout, not node references. A node reference
+    // works when assigned directly (DATABASE_URL above), but interpolating one
+    // into a template literal stringifies it to "[object Object]" and Railway
+    // stores that, with no error at plan or apply time. Anything composed with a
+    // host or a scheme therefore has to be written as an expression. Rename a
     // service and these have to change with it.
     MEDUSA_BACKEND_URL: 'https://${{RAILWAY_PUBLIC_DOMAIN}}',
     STORE_CORS: 'https://${{storefront.RAILWAY_PUBLIC_DOMAIN}}',
@@ -128,7 +133,7 @@ export default defineRailway((ctx) => {
       MEDUSA_WORKER_MODE: 'worker',
       MEDUSA_RUN_MIGRATIONS: 'false',
       DISABLE_MEDUSA_ADMIN: 'true',
-      MEDUSA_WAIT_FOR: `${backend.env.RAILWAY_PRIVATE_DOMAIN}:9000`,
+      MEDUSA_WAIT_FOR: '${{medusa-backend.RAILWAY_PRIVATE_DOMAIN}}:9000',
     },
   })
 
@@ -142,7 +147,7 @@ export default defineRailway((ctx) => {
     env: {
       // Build arguments as much as runtime variables: Next inlines every
       // NEXT_PUBLIC_ value into the client bundle while the image is built.
-      NEXT_PUBLIC_MEDUSA_BACKEND_URL: `https://${backend.env.RAILWAY_PUBLIC_DOMAIN}`,
+      NEXT_PUBLIC_MEDUSA_BACKEND_URL: 'https://${{medusa-backend.RAILWAY_PUBLIC_DOMAIN}}',
       NEXT_PUBLIC_MEDUSA_PUBLISHABLE_KEY: publishableKey,
       NEXT_PUBLIC_DEFAULT_REGION: 'dk',
       NEXT_PUBLIC_BASE_URL: 'https://${{RAILWAY_PUBLIC_DOMAIN}}',
