@@ -298,10 +298,79 @@ NEXT_PUBLIC_STRIPE_KEY              Stripe publishable key, the counterpart to m
 
 media-proxy: the five `S3_` descriptions above.
 
-Expect to re-enter literal defaults by hand. Generating a template from a working
-project keeps `${{ ... }}` expressions and **strips every literal value**, so
-`MEDUSA_WORKER_MODE`, `SEED_DEMO_DATA` and the rest come back as required boxes
-with no default, which quietly destroys the zero-configuration claim.
+## Generating the draft, and the exact fields to fill afterwards
+
+```bash
+railway templates create --project <project> --environment production --json
+```
+
+Verified 2026-11-14: **a stopped project serializes completely.** All six services,
+the bucket, both database volumes, every source, and each service's healthcheck,
+restart policy and public-networking setting came through from a project whose
+deployments had all been removed. So there is no need to pay for a running project
+just to regenerate, and **no service settings to re-enter in the editor**.
+
+What generation does strip is every **literal** value, while keeping every
+`${{ ... }}` expression. That rule is exact, and the resulting work is the list
+below and nothing else.
+
+**Fill these in the template editor, not on the live services.** There is no API
+to edit a stored draft (the schema has no `templateUpdate`, and the only input
+accepting a `serializedConfig` is the deploy-time override), so the editor is the
+only way in. Setting them on the project first and regenerating would mean typing
+them twice.
+
+### medusa-backend, 8 fields
+
+```text
+JWT_SECRET              = ${{secret(48)}}
+COOKIE_SECRET           = ${{secret(48)}}
+MEDUSA_ADMIN_PASSWORD   = ${{secret(18)}}
+MEDUSA_PUBLISHABLE_KEY  = pk_${{secret(48)}}
+MEDUSA_ADMIN_EMAIL      = admin@example.com
+MEDUSA_WORKER_MODE      = server
+MEDUSA_RUN_MIGRATIONS   = true
+SEED_DEMO_DATA          = true
+```
+
+### medusa-worker, 9 fields
+
+The four secrets are **references to medusa-backend, never their own `secret()`**.
+A `secret()` expression materialises once per deploy, so declaring it separately
+here would generate different values and break both the worker and the storefront.
+
+```text
+JWT_SECRET              = ${{medusa-backend.JWT_SECRET}}
+COOKIE_SECRET           = ${{medusa-backend.COOKIE_SECRET}}
+MEDUSA_ADMIN_PASSWORD   = ${{medusa-backend.MEDUSA_ADMIN_PASSWORD}}
+MEDUSA_PUBLISHABLE_KEY  = ${{medusa-backend.MEDUSA_PUBLISHABLE_KEY}}
+MEDUSA_ADMIN_EMAIL      = admin@example.com
+MEDUSA_WORKER_MODE      = worker
+MEDUSA_RUN_MIGRATIONS   = false
+DISABLE_MEDUSA_ADMIN    = true
+SEED_DEMO_DATA          = true
+```
+
+### storefront, 3 fields
+
+```text
+NEXT_PUBLIC_MEDUSA_PUBLISHABLE_KEY = ${{medusa-backend.MEDUSA_PUBLISHABLE_KEY}}
+NEXT_PUBLIC_DEFAULT_REGION         = dk
+NEXT_PUBLIC_STRIPE_KEY             = (leave empty)
+```
+
+The publishable key is the one that cannot be left blank: the storefront's build
+fails outright without it, so an empty box here is a template that cannot deploy.
+
+### media-proxy and Bucket
+
+Nothing. Every variable they carry is a `${{Bucket.*}}` reference and survived
+generation untouched.
+
+### Then the descriptions
+
+Every required variable needs one before the marketplace will publish, inherited
+Postgres and Redis ones included. The wording is in the section above.
 
 ## Listing
 
