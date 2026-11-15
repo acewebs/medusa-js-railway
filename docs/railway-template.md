@@ -36,15 +36,22 @@ vocabulary rather than ours, so `medusa-backend` deliberately runs
 7. **Bucket**, a Railway Storage Bucket.
 
 The names matter, because the variable references below use them. If you rename a
-service, update every reference that mentions it. Set **Root Directory** to the
-repository root for all four application services: the Dockerfiles copy from the
-root, and the build context is independent of the Dockerfile path.
+service, update every reference that mentions it. Publishing lowercases every
+service name, and rewrites the references to match, so `${{Postgres.*}}` becomes
+`${{postgres.*}}` on both sides and stays consistent.
+
+Leave **Root Directory** empty on all four application services. The Dockerfiles
+copy from the repository root, so a root directory of `apps/storefront` would cut
+the build context down to a directory that cannot install its own dependencies.
+The Dockerfile path is set separately and is independent of it.
 
 ## Variables
 
 ### medusa-backend
 
 ```text
+RAILWAY_DOCKERFILE_PATH = docker/backend.Dockerfile
+PORT                    = 9000
 DATABASE_URL            = ${{Postgres.DATABASE_URL}}
 REDIS_URL               = ${{Redis.REDIS_URL}}
 JWT_SECRET              = ${{secret(48)}}
@@ -70,6 +77,18 @@ S3_FILE_URL             = https://${{media-proxy.RAILWAY_PUBLIC_DOMAIN}}
 Optional, and absent rather than empty when unused: `STRIPE_API_KEY`,
 `STRIPE_WEBHOOK_SECRET`, `SENDGRID_API_KEY`, `SENDGRID_FROM`.
 
+`RAILWAY_DOCKERFILE_PATH` is how a Dockerfile outside the repository root is
+selected, and it has to be a variable rather than the service's build setting.
+Template generation drops the build setting, so a template carrying only that
+falls back to Railpack, builds the monorepo root, and fails. Both are set in
+`.railway/railway.ts` from one constant each, for the two different paths in.
+
+`PORT` is pinned rather than left to Railway's injected default. Medusa listens
+on whatever `PORT` says, and medusa-worker's `MEDUSA_WAIT_FOR` gates on 9000;
+without this the server comes up on 8080 and the worker waits forever on a port
+nothing is bound to. Nothing fails visibly, because the worker has no
+healthcheck, so the deploy is green with no jobs or subscribers running.
+
 Stripe takes two variables on two services. `STRIPE_API_KEY` here is the secret
 key, and the storefront needs the publishable one in `NEXT_PUBLIC_STRIPE_KEY`, or
 its checkout throws as soon as a Stripe payment session exists. Setting only one
@@ -89,15 +108,44 @@ materialises once inside a template deploy, so both services see the same value.
 
 ### medusa-worker
 
-Everything from medusa-backend except `MEDUSA_BACKEND_URL`, with these changed:
+Anything only
+`src/scripts/bootstrap.ts` reads is absent, because bootstrap runs behind the
+`MEDUSA_RUN_MIGRATIONS=true` branch of the entrypoint and that is the server
+alone: `MEDUSA_ADMIN_EMAIL`, `MEDUSA_ADMIN_PASSWORD`, `MEDUSA_PUBLISHABLE_KEY`
+and `SEED_DEMO_DATA` would never be read here. `MEDUSA_BACKEND_URL` is absent
+too, for the same reason it is wrong rather than merely unused: it names the
+current service's public domain, and this service has none.
 
 ```text
+RAILWAY_DOCKERFILE_PATH = docker/backend.Dockerfile
+DATABASE_URL            = ${{Postgres.DATABASE_URL}}
+REDIS_URL               = ${{Redis.REDIS_URL}}
+JWT_SECRET              = ${{medusa-backend.JWT_SECRET}}
+COOKIE_SECRET           = ${{medusa-backend.COOKIE_SECRET}}
 MEDUSA_WORKER_MODE      = worker
 MEDUSA_RUN_MIGRATIONS   = false
 DISABLE_MEDUSA_ADMIN    = true
 MEDUSA_WAIT_FOR         = ${{medusa-backend.RAILWAY_PRIVATE_DOMAIN}}:9000
-MEDUSA_PUBLISHABLE_KEY  = ${{medusa-backend.MEDUSA_PUBLISHABLE_KEY}}
+STORE_CORS              = https://${{storefront.RAILWAY_PUBLIC_DOMAIN}}
+ADMIN_CORS              = ${{medusa-backend.ADMIN_CORS}}
+AUTH_CORS               = ${{medusa-backend.AUTH_CORS}}
+S3_BUCKET               = ${{Bucket.BUCKET}}
+S3_ENDPOINT             = ${{Bucket.ENDPOINT}}
+S3_REGION               = ${{Bucket.REGION}}
+S3_ACCESS_KEY_ID        = ${{Bucket.ACCESS_KEY_ID}}
+S3_SECRET_ACCESS_KEY    = ${{Bucket.SECRET_ACCESS_KEY}}
+S3_FILE_URL             = https://${{media-proxy.RAILWAY_PUBLIC_DOMAIN}}
 ```
+
+`JWT_SECRET` and `COOKIE_SECRET` are **references to medusa-backend, never their
+own `secret()`**. A `secret()` expression materialises once per deploy, so
+declaring one here would generate a different value and the two services would
+disagree.
+
+`ADMIN_CORS` and `AUTH_CORS` are references for a different reason: the
+backend's versions are built from `${{RAILWAY_PUBLIC_DOMAIN}}`, which resolves
+per service, so copying the expressions here would store `https://` and an empty
+origin. `STORE_CORS` needs no reference, since it already names the storefront.
 
 `MEDUSA_WAIT_FOR` is what keeps the worker from racing a half-migrated database:
 medusa-backend opens its port only after migrations and bootstrap have finished, so a
@@ -107,6 +155,7 @@ rather than hardcoding `medusa-backend.railway.internal`, which freezes on renam
 ### storefront
 
 ```text
+RAILWAY_DOCKERFILE_PATH             = docker/storefront.Dockerfile
 NEXT_PUBLIC_MEDUSA_BACKEND_URL      = https://${{medusa-backend.RAILWAY_PUBLIC_DOMAIN}}
 NEXT_PUBLIC_MEDUSA_PUBLISHABLE_KEY  = ${{medusa-backend.MEDUSA_PUBLISHABLE_KEY}}
 NEXT_PUBLIC_DEFAULT_REGION          = dk
@@ -120,21 +169,33 @@ Dockerfile declares an `ARG` for each.
 
 ### media-proxy
 
-The five `${{Bucket.*}}` variables, nothing else.
+The five `${{Bucket.*}}` variables, plus
+`RAILWAY_DOCKERFILE_PATH = docker/media-proxy.Dockerfile`. Nothing else:
+`server.mjs` also reads `PORT`, `S3_FORCE_PATH_STYLE`, `S3_PREFIX` and
+`CACHE_CONTROL`, and each has a working default.
 
 ## Service settings
 
-| Setting | medusa-backend | medusa-worker | storefront | media-proxy |
-| --- | --- | --- | --- | --- |
-| Healthcheck path | `/health` | none | `/` | `/_health` |
-| Healthcheck timeout | 600 | | 300 | 60 |
-| Restart policy | on failure, 5 | on failure, 10 | on failure, 10 | on failure, 10 |
-| Public networking | yes, port 9000 | **no** | yes, port 8000 | yes, port 9200 |
-| Start command | empty | empty | empty | empty |
-| Pre-deploy command | **empty** | empty | empty | empty |
+| Setting             | medusa-backend | medusa-worker  | storefront     | media-proxy    |
+| ------------------- | -------------- | -------------- | -------------- | -------------- |
+| Healthcheck path    | `/health`      | none           | `/`            | `/_health`     |
+| Healthcheck timeout | 600            |                | 300            | 60             |
+| Restart policy      | on failure, 5  | on failure, 10 | on failure, 10 | on failure, 10 |
+| Public networking   | yes            | **no**         | yes            | yes            |
+| Start command       | empty          | empty          | empty          | empty          |
+| Pre-deploy command  | **empty**      | empty          | empty          | empty          |
 
-The generous healthcheck timeout on medusa-backend is deliberate: its first deploy
-migrates, bootstraps and seeds a demo catalogue before it starts listening.
+The healthcheck timeouts apply to `railway config apply` only. A published
+template cannot carry them, and the editor has no field for one, so a template
+deploy runs on Railway's 300 second default throughout. That turned out not to
+matter: on a cold deploy medusa-backend went from DEPLOYING to healthy in about
+twenty seconds, migrations, bootstrap and seed included, so the 600 was
+cautious rather than necessary.
+
+Only medusa-backend pins a port, to 9000, via `PORT`. The storefront and
+media-proxy ignore the `ENV PORT` in their Dockerfiles and listen on Railway's
+injected `PORT` instead, which is harmless because nothing references their
+ports.
 
 Pre-deploy stays empty because a published template does not carry pre-deploy
 commands, so migrations put there would never run on the deploy that needs them.
@@ -142,10 +203,14 @@ They run from the image's entrypoint instead, which works however the service wa
 created. A failed migration exits before the backend starts, the healthcheck never
 passes, and Railway keeps the previous version live.
 
-Railway's Config as Code (`railway.json`) is deprecated and is not read at all for
-services created from now on, so a healthcheck committed to the repo would
-silently never apply. This repo describes the project in `.railway/railway.ts`,
-which the Railway CLI evaluates; the composer does not read that either.
+Config as Code (`railway.json` or `railway.toml`) would express both the
+Dockerfile path and the healthcheck timeout, and is the obvious-looking fix for
+both. It is not one: Railway deprecated it, and it keeps working only for
+services created before **2026-12-01**. A template published today creates
+services after that date, so a config committed to the repo would silently never
+apply. The variable route is the one that survives. This repo describes the
+project in `.railway/railway.ts`, which the Railway CLI evaluates; the template
+editor reads neither.
 
 ## Deploying this repository directly
 
@@ -162,7 +227,7 @@ instead, the same arrangement `media-proxy/` uses.
 npm --prefix .railway install     # the SDK that evaluates railway.ts
 railway login
 railway init
-railway config apply              # creates 6 services, Postgres, Redis, the bucket
+railway config apply              # creates the six services and the bucket
 railway domain --service medusa-backend
 railway domain --service storefront
 railway domain --service media-proxy
@@ -181,6 +246,14 @@ triggers the first deploy, by which point everything resolves.
 Verified end to end on 2026-11-09: six services from a cold apply, all SUCCESS in
 about 3.5 minutes, and `scripts/smoke-test.mjs` passing 17/17 against the live
 URLs.
+
+`.railway/railway.ts` changed on 2026-11-15, to add `PORT`, the four
+`RAILWAY_DOCKERFILE_PATH` variables and the worker's trimmed environment. Those
+changes are **`railway config plan` verified only**: the plan evaluates and the
+diff is exactly the five additions, two CORS corrections and five deletions, but
+no cold `railway config apply` has been run since. The equivalent configuration
+was proven through the template path instead, which is what the next section
+covers.
 
 Read the resulting state back rather than trusting the command's output. Both
 `railway config apply` and template generation report success while quietly doing
@@ -209,10 +282,17 @@ ready to update those URLs by hand.
 Deploy the template into a fresh, empty project and check all of it. A project
 you already deployed from hides most of the failures that only happen cold.
 
+Two of these are there because a deploy passed them by looking green. medusa-worker
+has no healthcheck, so it reports SUCCESS whether it is draining the queue or
+blocked forever in its wait loop; and a service built by the wrong builder also
+reports SUCCESS, just running something other than our image. Read the logs, do
+not read the status column.
+
 - [ ] All seven resources reach Online, with no restart loops
 - [ ] Every build succeeds without a reachable database or backend (Railway builds have no private networking)
 - [ ] The medusa-backend log shows migrate, then bootstrap, then "Server is ready"
-- [ ] The medusa-worker log shows it waiting for medusa-backend, then starting in worker mode
+- [ ] The medusa-backend log says "Server is ready on port: 9000", not 8080
+- [ ] The medusa-worker log shows it waiting for medusa-backend, then **getting past the wait** and processing subscribers
 - [ ] `/health` returns 200 and `/app` loads
 - [ ] The generated `MEDUSA_ADMIN_PASSWORD` logs in to the admin
 - [ ] `node scripts/smoke-test.mjs` passes against the deployed URLs
@@ -237,6 +317,10 @@ railway api 'query { template(code: "postgres") { serializedConfig } }'
 medusa-backend and medusa-worker:
 
 ```text
+RAILWAY_DOCKERFILE_PATH Path to the Dockerfile this service builds from. The build context
+                        stays at the repository root.
+PORT                    Port the Medusa server listens on. Pinned so the worker's
+                        MEDUSA_WAIT_FOR target matches. medusa-backend only.
 DATABASE_URL            Connection to the Postgres service in this project. Set for you.
 REDIS_URL               Connection to the Redis service in this project. Set for you. Redis
                         backs the event bus, workflow engine, locking and cache.
@@ -282,6 +366,8 @@ S3_FILE_URL             Public base URL for uploaded files, which is the media p
 storefront:
 
 ```text
+RAILWAY_DOCKERFILE_PATH             Path to the Dockerfile this service builds from. The build
+                                    context stays at the repository root.
 NEXT_PUBLIC_MEDUSA_BACKEND_URL      Public URL of the Medusa server. Set for you. Baked into
                                     the storefront at build time.
 NEXT_PUBLIC_MEDUSA_PUBLISHABLE_KEY  Publishable API key, taken from the Medusa server. Set for
@@ -296,7 +382,11 @@ NEXT_PUBLIC_STRIPE_KEY              Stripe publishable key, the counterpart to m
                                     created and this is unset.
 ```
 
-media-proxy: the five `S3_` descriptions above.
+media-proxy: the five `S3_` descriptions above, plus `RAILWAY_DOCKERFILE_PATH`.
+
+Postgres and Redis descriptions are Railway's own, and reading them from the CLI
+beats rewriting them: an inherited service should read like the one people
+already know.
 
 ## Generating the draft, and the exact fields to fill afterwards
 
@@ -304,25 +394,44 @@ media-proxy: the five `S3_` descriptions above.
 railway templates create --project <project> --environment production --json
 ```
 
-Verified 2026-11-14: **a stopped project serializes completely.** All six services,
-the bucket, both database volumes, every source, and each service's healthcheck,
-restart policy and public-networking setting came through from a project whose
-deployments had all been removed. So there is no need to pay for a running project
-just to regenerate, and **no service settings to re-enter in the editor**.
+Verified 2026-11-14: **a stopped project serializes completely**, as far as
+services go. All six, the bucket, both database volumes, every source, and each
+service's healthcheck path, restart policy and public-networking setting came
+through from a project whose deployments had all been removed. So there is no
+need to pay for a running project just to regenerate.
 
-What generation does strip is every **literal** value, while keeping every
-`${{ ... }}` expression. That rule is exact, and the resulting work is the list
-below and nothing else.
+What generation strips is every **literal** value, while keeping every
+`${{ ... }}` expression. It also drops two service settings outright, which is
+the part worth knowing before trusting a generated draft:
+
+- **`dockerfilePath`**. Gone, and there is no field for it in the editor. Express
+  it as a `RAILWAY_DOCKERFILE_PATH` variable instead, which is why
+  `.railway/railway.ts` sets both. Without it Railway falls back to Railpack and
+  builds the monorepo root, where `pnpm run build` builds every workspace at once
+  and dies on the storefront's missing publishable key.
+- **`healthcheckTimeout`**. Also gone, also no field. Deploys run on Railway's
+  300 second default, which measurement showed is enough.
+
+Verified the hard way on 2026-11-14: a cold deploy of a draft missing the first
+of those failed three of four application services, and the fourth built green
+with the wrong builder, which is worse.
 
 **Fill these in the template editor, not on the live services.** There is no API
 to edit a stored draft (the schema has no `templateUpdate`, and the only input
 accepting a `serializedConfig` is the deploy-time override), so the editor is the
 only way in. Setting them on the project first and regenerating would mean typing
-them twice.
+them twice. Editing a template that is already **published applies to the live
+listing immediately**, with no second publish step and no staging copy.
 
-### medusa-backend, 8 fields
+`railway deploy -t <code> -v "service.KEY=value"` cannot stand in for any of
+this. It only fills variables the template already declares, so it will not
+inject a missing one.
+
+### medusa-backend, 10 fields
 
 ```text
+RAILWAY_DOCKERFILE_PATH = docker/backend.Dockerfile
+PORT                    = 9000
 JWT_SECRET              = ${{secret(48)}}
 COOKIE_SECRET           = ${{secret(48)}}
 MEDUSA_ADMIN_PASSWORD   = ${{secret(18)}}
@@ -333,53 +442,119 @@ MEDUSA_RUN_MIGRATIONS   = true
 SEED_DEMO_DATA          = true
 ```
 
-### medusa-worker, 9 fields
+### medusa-worker, 6 fields, 2 corrections and 5 deletions
 
-The four secrets are **references to medusa-backend, never their own `secret()`**.
-A `secret()` expression materialises once per deploy, so declaring it separately
-here would generate different values and break both the worker and the storefront.
+The secrets are **references to medusa-backend, never their own `secret()`**. A
+`secret()` expression materialises once per deploy, so declaring one separately
+here would generate a different value and the two services would disagree.
 
 ```text
+RAILWAY_DOCKERFILE_PATH = docker/backend.Dockerfile
 JWT_SECRET              = ${{medusa-backend.JWT_SECRET}}
 COOKIE_SECRET           = ${{medusa-backend.COOKIE_SECRET}}
-MEDUSA_ADMIN_PASSWORD   = ${{medusa-backend.MEDUSA_ADMIN_PASSWORD}}
-MEDUSA_PUBLISHABLE_KEY  = ${{medusa-backend.MEDUSA_PUBLISHABLE_KEY}}
-MEDUSA_ADMIN_EMAIL      = admin@example.com
 MEDUSA_WORKER_MODE      = worker
 MEDUSA_RUN_MIGRATIONS   = false
 DISABLE_MEDUSA_ADMIN    = true
-SEED_DEMO_DATA          = true
 ```
 
-### storefront, 3 fields
+Correct these two, which generation carries through unchanged and wrong, because
+they are built from the _current_ service's public domain and this service has
+none:
 
 ```text
+ADMIN_CORS              = ${{medusa-backend.ADMIN_CORS}}
+AUTH_CORS               = ${{medusa-backend.AUTH_CORS}}
+```
+
+Delete these four. Only `src/scripts/bootstrap.ts` reads them, and bootstrap runs
+behind the `MEDUSA_RUN_MIGRATIONS=true` branch of the entrypoint, which is the
+server alone:
+
+```text
+MEDUSA_ADMIN_EMAIL
+MEDUSA_ADMIN_PASSWORD
+MEDUSA_PUBLISHABLE_KEY
+SEED_DEMO_DATA
+```
+
+Delete `MEDUSA_BACKEND_URL` too, but for the other reason. `medusa-config.ts`
+does read it on both services, so the rule above does not cover it; it is built
+from `${{RAILWAY_PUBLIC_DOMAIN}}`, which this service does not have, so it stores
+`https://`. Harmless in practice, since it only feeds `admin.backendUrl` on a
+service running `DISABLE_MEDUSA_ADMIN=true` and a `secureCookies` fallback that
+lands on the same answer either way, but a wrong value is worth removing rather
+than keeping.
+
+### storefront, 4 fields
+
+```text
+RAILWAY_DOCKERFILE_PATH            = docker/storefront.Dockerfile
 NEXT_PUBLIC_MEDUSA_PUBLISHABLE_KEY = ${{medusa-backend.MEDUSA_PUBLISHABLE_KEY}}
 NEXT_PUBLIC_DEFAULT_REGION         = dk
-NEXT_PUBLIC_STRIPE_KEY             = (leave empty)
+NEXT_PUBLIC_STRIPE_KEY             = (empty, and mark it Optional)
 ```
 
 The publishable key is the one that cannot be left blank: the storefront's build
 fails outright without it, so an empty box here is a template that cannot deploy.
+`NEXT_PUBLIC_STRIPE_KEY` is the opposite case, and needs the Optional flag as
+well as the empty value, or the deploy form demands a Stripe key from everyone.
 
-### media-proxy and Bucket
+### media-proxy, 1 field
 
-Nothing. Every variable they carry is a `${{Bucket.*}}` reference and survived
-generation untouched.
+```text
+RAILWAY_DOCKERFILE_PATH = docker/media-proxy.Dockerfile
+```
+
+Its five `${{Bucket.*}}` variables survive generation untouched.
+
+### Postgres, 6 fields, and Redis, 2
+
+Easy to miss, because they are inherited rather than ours, and their literals are
+stripped exactly like everything else. Empty `REDISPORT` and `REDISUSER` leave
+`REDIS_URL` as `redis://:pass@host:`, which nothing connects to.
+
+```text
+Postgres  PGDATA                              = /var/lib/postgresql/data/pgdata
+Postgres  PGPORT                              = 5432
+Postgres  POSTGRES_DB                         = railway
+Postgres  POSTGRES_USER                       = postgres
+Postgres  RAILWAY_DEPLOYMENT_DRAINING_SECONDS = 60
+Postgres  SSL_CERT_DAYS                       = 820   (mark it Optional)
+Redis     REDISPORT                           = 6379
+Redis     REDISUSER                           = default
+```
+
+`PGDATA` is the mount path plus a `pgdata` subdirectory, not the mount path
+itself: initdb refuses a directory holding `lost+found`.
+
+### Bucket
+
+Nothing, and nothing available. The editor shows the region as "Selected by the
+user": a template cannot set it, and the deployer picks it on the deploy form.
 
 ### Then the descriptions
 
 Every required variable needs one before the marketplace will publish, inherited
-Postgres and Redis ones included. The wording is in the section above.
+Postgres and Redis ones included. That is 33 fields in total across the six
+services. The wording is in the section above.
 
 ## Listing
 
 Two listings from this one repository, sharing its Dockerfiles and docs:
 
 - **MedusaJS 2 Production Ready**: medusa-backend, medusa-worker, Postgres, Redis.
-  Four services, for someone building their own storefront.
-- **MedusaJS 2 Full Stack Production Ready**: the above plus storefront,
-  media-proxy and the bucket.
+  Four services, for someone building their own storefront. Not published yet.
+- **[MedusaJS 2 Full Stack Production Ready](https://railway.com/deploy/medusajs-2-full-stack-production-ready)**:
+  the above plus storefront, media-proxy and the bucket. Published 2026-11-14,
+  verified cold on 2026-11-15.
 
 File both under **Starters**, not Other. Copy is in
 [marketplace-listing.md](marketplace-listing.md).
+
+Two things about the listing form that are not obvious. The card description is
+**25 to 75 characters**, and the overview has to keep every heading of Railway's
+required structure with the template's name interpolated into each, or publishing
+is refused for the section it cannot find. An icon must be a URL ending in an
+image extension or a `devicons.railway.app` path; `devicons` has no Medusa entry,
+and an unknown name redirects to Railway's own logo rather than failing, so check
+what a devicon URL actually resolves to before trusting it.

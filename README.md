@@ -3,6 +3,8 @@
 **Medusa server + worker, Next.js storefront, PostgreSQL, Redis and persistent
 media, wired together and verified end to end.**
 
+[![Deploy on Railway](https://railway.com/button.svg)](https://railway.com/deploy/medusajs-2-full-stack-production-ready?referralCode=aceweb&utm_medium=integration&utm_source=template&utm_campaign=generic)
+
 A fork of [`medusajs/dtc-starter`](https://github.com/medusajs/dtc-starter), the
 monorepo `create-medusa-app` scaffolds today, with the infrastructure a real
 deployment needs layered on top. Deploy it to Railway in one click and you get a
@@ -10,20 +12,25 @@ store that already has an admin account, regions, a sales channel, a publishable
 API key, working search and a demo catalogue. Then keep developing it as a normal
 Medusa project.
 
+Published on the Railway marketplace as
+[MedusaJS 2 Full Stack Production Ready](https://railway.com/deploy/medusajs-2-full-stack-production-ready?referralCode=aceweb&utm_medium=integration&utm_source=template&utm_campaign=generic).
+The listing copy is mirrored in
+[docs/marketplace-listing.md](docs/marketplace-listing.md).
+
 ## What is included
 
-|                          |                                                                             |
-| ------------------------ | --------------------------------------------------------------------------- |
-| Medusa 2.22              | API, admin dashboard at `/app`, store and admin REST APIs                   |
-| Server and worker        | The documented production topology, same image, different mode              |
-| PostgreSQL               | Provisioned by the template, over Railway's private network                 |
-| Redis                    | Event bus, workflow engine, locking provider and cache                      |
-| Next.js storefront       | Medusa's own DTC starter, product pages, cart, multi-step checkout          |
-| Search                   | Medusa's index on PostgreSQL, with facets. No separate search service       |
-| Persistent media         | Uploads go to a Railway bucket, served by a read-only proxy                 |
-| Idempotent bootstrap     | Migrations, admin account and publishable key, from the container entrypoint |
-| Optional Stripe, SendGrid | Configured when you set a key, absent when you do not                      |
-| Smoke test               | Places a real order against a deployment, so "Online" is not the bar        |
+|                           |                                                                              |
+| ------------------------- | ---------------------------------------------------------------------------- |
+| Medusa 2.22               | API, admin dashboard at `/app`, store and admin REST APIs                    |
+| Server and worker         | The documented production topology, same image, different mode               |
+| PostgreSQL                | Provisioned by the template, over Railway's private network                  |
+| Redis                     | Event bus, workflow engine, locking provider and cache                       |
+| Next.js storefront        | Medusa's own DTC starter, product pages, cart, multi-step checkout           |
+| Search                    | Medusa's index on PostgreSQL, with facets. No separate search service        |
+| Persistent media          | Uploads go to a Railway bucket, served by a read-only proxy                  |
+| Idempotent bootstrap      | Migrations, admin account and publishable key, from the container entrypoint |
+| Optional Stripe, SendGrid | Configured when you set a key, absent when you do not                        |
+| Smoke test                | Places a real order against a deployment, so "Online" is not the bar         |
 
 ## Why this exists
 
@@ -43,13 +50,44 @@ up by hand. The specific things that break, and what this does about them, are i
 
 ## Deploy to Railway
 
-The published template creates seven resources and fills in every variable from
-them, so there is nothing to configure. The first deploy builds the images,
-migrates, bootstraps and seeds.
+[![Deploy on Railway](https://railway.com/button.svg)](https://railway.com/deploy/medusajs-2-full-stack-production-ready?referralCode=aceweb&utm_medium=integration&utm_source=template&utm_campaign=generic)
 
-To deploy your own copy of this repository instead, see
-[docs/railway-template.md](docs/railway-template.md), which covers
-`railway config apply`, the bucket script and the composer settings.
+Railway creates seven resources: the Medusa server, the worker, the storefront,
+the media proxy, PostgreSQL, Redis and a storage bucket. Every variable is filled
+in from those, and every secret is generated at deploy time, so **there are no
+variables to fill in**. The deploy form asks you for one thing, the bucket's
+region, which a template is not allowed to set. The first deploy then builds the
+four images, migrates, bootstraps and seeds a demo catalogue.
+
+Verified cold on 2026-11-15: all six services green in about four minutes, and
+`scripts/smoke-test.mjs` passing 17/17 against the deployed URLs, order included.
+
+### Deploying this repository directly
+
+The button above deploys a published Railway template. To deploy your own copy of
+this repository instead, use the Railway CLI:
+
+```bash
+npm --prefix .railway install   # the SDK that evaluates railway.ts
+railway login
+railway init
+railway config apply            # six services and the bucket
+railway domain --service medusa-backend
+railway domain --service storefront
+railway domain --service media-proxy
+railway config apply            # again, now that the domains exist
+```
+
+Apply twice, with the domains in between: every expression built on a public
+domain resolves to an empty string until that domain exists, and the storefront
+bakes its backend URL and publishable key into the bundle at build time.
+
+`.railway/railway.ts` describes the whole project, including the bucket. Applying
+it owns the environment, so anything not described in it is deleted: point it at
+a new project rather than one that already has other things in it. Change `REPO`
+to your own fork first, or you will deploy this repository rather than yours. The
+rest, including the exact variables and the template editor's quirks, is in
+[docs/railway-template.md](docs/railway-template.md).
 
 ## Run it locally
 
@@ -73,7 +111,7 @@ apps/backend/        Medusa, upstream, plus medusa-config.ts and src/scripts/boo
 apps/storefront/     Next.js, upstream, plus two small production fixes
 media-proxy/         read-only public reads of the bucket, outside the workspace on purpose
 docker/              the three images and the backend entrypoint
-scripts/             smoke test, upstream sync, bucket provisioning
+scripts/             smoke test and upstream sync
 .railway/railway.ts  the project, applied with the Railway CLI
 docs/                local testing, Railway template, upstream sync, listing copy
 ```
