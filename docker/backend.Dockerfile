@@ -45,7 +45,8 @@ COPY --from=builder --chown=medusa:medusa /app/apps/backend/.medusa/server ./
 RUN npm install --omit=dev --legacy-peer-deps --no-audit --no-fund \
   && npm cache clean --force
 
-COPY --chown=medusa:medusa docker/backend-entrypoint.sh docker/wait-for-tcp.mjs docker/
+COPY --chown=medusa:medusa docker/backend-entrypoint.sh docker/wait-for-tcp.mjs docker/wait-for-deploy.mjs docker/
+COPY --chown=medusa:medusa docker/lib docker/lib
 
 EXPOSE 9000
 

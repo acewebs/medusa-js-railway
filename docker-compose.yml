@@ -144,11 +144,16 @@ services:
       PORT: 9000
       MEDUSA_WORKER_MODE: server
       MEDUSA_RUN_MIGRATIONS: 'true'
+      # Stands in for RAILWAY_GIT_COMMIT_SHA, which only exists on Railway, so
+      # the worker's version handshake is exercised here rather than its
+      # fallback. Both services must carry the same value.
+      MEDUSA_SCHEMA_VERSION: local
     ports:
       - '${MEDUSA_PORT:-9000}:9000'
 
-  # Same image, different mode. Waits for medusa-backend, which only opens its
-  # port once migrations and bootstrap have finished.
+  # Same image, different mode. Waits for a medusa-backend reporting its own
+  # build at /deploy-ready, which it only serves once migrations and bootstrap
+  # have finished.
   medusa-worker:
     profiles: ['stack']
     build:
@@ -167,6 +172,7 @@ services:
       DISABLE_MEDUSA_ADMIN: 'true'
       MEDUSA_RUN_MIGRATIONS: 'false'
       MEDUSA_WAIT_FOR: medusa-backend:9000
+      MEDUSA_SCHEMA_VERSION: local
 
   # Host networking, locally only. The starter reads one backend URL and Next
   # bakes it into the bundle, so the browser and the storefront's own server have

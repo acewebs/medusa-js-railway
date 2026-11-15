@@ -108,7 +108,7 @@ materialises once inside a template deploy, so both services see the same value.
 
 ### medusa-worker
 
-Anything only
+What the worker runs, and nothing more. Anything only
 `src/scripts/bootstrap.ts` reads is absent, because bootstrap runs behind the
 `MEDUSA_RUN_MIGRATIONS=true` branch of the entrypoint and that is the server
 alone: `MEDUSA_ADMIN_EMAIL`, `MEDUSA_ADMIN_PASSWORD`, `MEDUSA_PUBLISHABLE_KEY`
@@ -147,10 +147,20 @@ backend's versions are built from `${{RAILWAY_PUBLIC_DOMAIN}}`, which resolves
 per service, so copying the expressions here would store `https://` and an empty
 origin. `STORE_CORS` needs no reference, since it already names the storefront.
 
-`MEDUSA_WAIT_FOR` is what keeps the worker from racing a half-migrated database:
-medusa-backend opens its port only after migrations and bootstrap have finished, so a
-reachable port is the schema's readiness signal. Reference the private domain
-rather than hardcoding `medusa-backend.railway.internal`, which freezes on rename.
+`MEDUSA_WAIT_FOR` is what keeps the worker from racing a half-migrated database,
+but an open port is not sufficient proof on its own. Railway keeps the previous
+deployment serving until the new one passes its healthcheck, so on every deploy
+after the first the port is already open and answered by the _old_ backend while
+the new one is still migrating. A worker gated on the port alone would start new
+code against the old schema.
+
+So `docker/wait-for-deploy.mjs` polls `/deploy-ready` on this host and port and
+blocks until the backend reports the worker's own `RAILWAY_GIT_COMMIT_SHA`. The
+backend opens its port only after migrations and bootstrap succeed, so a matching
+build is proof the schema is current. Without that variable, which Railway sets
+only for GitHub-triggered deploys, it falls back to waiting for the port, which
+is still correct on a first deploy. Reference the private domain rather than
+hardcoding `medusa-backend.railway.internal`, which freezes on rename.
 
 ### storefront
 
@@ -333,16 +343,17 @@ MEDUSA_WORKER_MODE      server for the instance serving the API and admin, worke
 MEDUSA_RUN_MIGRATIONS   Whether this service applies database migrations on boot. True on the
                         server only, so two services never migrate at once.
 DISABLE_MEDUSA_ADMIN    Hides the admin dashboard on the worker, which runs the same image.
-MEDUSA_WAIT_FOR         Host and port the worker waits for before starting, so it never races
-                        a database that is still being migrated.
+MEDUSA_WAIT_FOR         Host and port of the Medusa server. The worker polls it for a build
+                        matching its own before starting, so it never runs against a schema
+                        that has not been migrated yet.
 MEDUSA_BACKEND_URL      Public URL of this service, which the admin dashboard calls. Set for you.
 MEDUSA_ADMIN_EMAIL      Email of the admin account created on first boot. Change it before
                         deploying.
 MEDUSA_ADMIN_PASSWORD   Password for that account, generated on deploy. Only used the first
-                        time: changing it later does not reset the password, and recovering a
-                        lost one needs either SENDGRID_API_KEY configured for the admin's own
-                        reset email or a manual change in the database. Copy it somewhere
-                        before the store is in use.
+                        time: changing it later does not reset the password. Recovering a lost
+                        one means creating a second admin with `medusa user`, because Medusa
+                        leaves the reset email to the application and this template ships no
+                        subscriber for it. Copy it somewhere before the store is in use.
 MEDUSA_PUBLISHABLE_KEY  Publishable API key the storefront authenticates with. Generated on
                         deploy and written onto the key in the database, because the
                         storefront needs it while it is being built.

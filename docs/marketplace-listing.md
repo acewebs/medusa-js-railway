@@ -41,6 +41,16 @@ MedusaJS 2 Full Stack Production Ready is a complete commerce stack deployed the
 
 Medusa's deployment guide asks for two instances of the application, one serving the API in server mode and one running jobs and subscribers in worker mode, with Redis behind the event bus, workflow engine, locking and cache. Most one-click Medusa templates run a single process and skip some of those modules, which works until a long workflow starts competing with checkout requests. This template deploys the documented topology instead. Migrations, the first admin account, regions, a sales channel, the storefront's publishable key and a demo catalogue are all created on the first deploy, so what finishes building is a working store rather than an empty one waiting to be configured.
 
+## Quick Start
+
+1. Click **Deploy** and pick a region for the storage bucket.
+2. Wait for the services to go green. Around four minutes in our test.
+3. Open the **storefront** URL. It already has a catalogue, regions and search.
+4. Open the **medusa-backend** URL at `/app` for the admin dashboard.
+5. Sign in with `MEDUSA_ADMIN_EMAIL` and `MEDUSA_ADMIN_PASSWORD` from medusa-backend's **Variables** tab.
+
+That is the whole setup. Copy the generated password somewhere first: it is applied on the first boot only, so changing the variable afterwards does not reset the account.
+
 ## Common Use Cases
 
 - **A production store on your own infrastructure**, with no per-sale fee and no platform lock-in
@@ -71,11 +81,13 @@ wait_for "$DATABASE_URL"
 wait_for "$REDIS_URL"
 medusa db:migrate            # server only
 medusa exec ./src/scripts/bootstrap.js
-wait_for "$MEDUSA_WAIT_FOR"  # worker only
+wait_for_build "$MEDUSA_WAIT_FOR"  # worker only, polls /deploy-ready
 exec medusa start
 ```
 
-Both Medusa services run the same image and differ only in `MEDUSA_WORKER_MODE`. The API instance's port opens only after migrations and bootstrap succeed, which makes a reachable port the schema's readiness signal for the worker, so the worker never races a database that is still being migrated. A failed migration exits before anything serves traffic: the healthcheck never passes and Railway keeps the previous version live.
+Both Medusa services run the same image and differ only in `MEDUSA_WORKER_MODE`. The API instance's port opens only after migrations and bootstrap succeed, and a failed migration exits before anything serves traffic: the healthcheck never passes and Railway keeps the previous version live.
+
+The worker waits for a _build_, not just an open port, and the difference matters on every deploy after the first. Railway keeps the previous deployment serving until the new one is healthy, so the port is already open, answered by the old backend, while the new one is still migrating. A worker gated on the port would start new code against the old schema. Instead the backend reports its commit at `/deploy-ready`, and the worker blocks until that matches its own.
 
 Setup lives in the container entrypoint rather than a deploy-time hook, because a published Railway template does not carry pre-deploy commands and anything put there would never run on the deploy that needs it. Bootstrap is idempotent, so a boot interrupted halfway through is repaired by the next one instead of leaving a store with no admin account.
 
@@ -101,11 +113,29 @@ The repository ships the smoke test used to check it: admin login, a file upload
 
 #### Three things to do before you go live
 
-`MEDUSA_ADMIN_PASSWORD` is generated for you and used only on the first boot. Changing it afterwards does not reset the account, and recovering a lost one needs either `SENDGRID_API_KEY` configured for the admin's own reset email or a manual change in the database. Copy it out of the variables before the store is in use.
+`MEDUSA_ADMIN_PASSWORD` is generated for you and used only on the first boot, so copy it out of the variables before the store is in use. Recovering a lost one means creating a second admin, which the FAQ below covers.
 
 `S3_FILE_URL` is written onto every product image as it is uploaded. Changing it later does not rewrite rows that already exist, so if you plan to serve media from a custom domain or a CDN, set that address before building the catalogue.
 
 `SEED_DEMO_DATA` is true by default so the storefront has something to render. Set it to false for an empty store. Deleting the demo products later works too, and they do not come back on redeploy.
+
+### Questions people ask before deploying
+
+**What does it cost to run?** Six services plus a bucket, on Railway's usage-based pricing. There is no separate search service to pay for, which is the main structural saving against templates that run Meilisearch. We have not published a measured monthly figure yet, so size it on your own traffic rather than taking a number on trust.
+
+**I lost the admin password.** `railway ssh` into medusa-backend and run `medusa user` to create a second admin under a different address. The dashboard's "forgot password" link will not help: Medusa leaves sending that mail to the application, and this template ships no subscriber for it.
+
+**Does it do Stripe?** Yes, and it is off until you set a key. `STRIPE_API_KEY` on medusa-backend and `NEXT_PUBLIC_STRIPE_KEY` on the storefront, both or neither: setting one half breaks checkout client side.
+
+**Will my data survive a redeploy?** Yes. Postgres and the bucket are on volumes, and the demo catalogue is seeded once rather than on every boot, so deleting the demo products does not bring them back.
+
+**Can I use a custom domain?** Yes, and several variables embed a URL, so update `MEDUSA_BACKEND_URL`, the three CORS variables, and the storefront's `NEXT_PUBLIC_MEDUSA_BACKEND_URL` and `NEXT_PUBLIC_BASE_URL`. The storefront has to rebuild, because Next inlines those at build time.
+
+**How do I customise it?** Fork the repository and point the services at your fork. It is a normal Medusa project built on the current `create-medusa-app` monorepo, not a wrapper, so `apps/backend/src` and `apps/storefront/src` are where your code goes.
+
+**How do I update Medusa?** The repository ships an upstream sync script and keeps its own changes as commits on top of a clean upstream snapshot, so an upgrade is a three-way merge rather than a hand diff. Migrations then run from the entrypoint on the next deploy.
+
+**Can I deploy just the backend?** Yes, see below.
 
 #### If you do not need the storefront
 

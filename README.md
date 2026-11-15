@@ -3,7 +3,15 @@
 **Medusa server + worker, Next.js storefront, PostgreSQL, Redis and persistent
 media, wired together and verified end to end.**
 
+![Medusa 2.22](https://img.shields.io/badge/Medusa-2.22-6366f1)
+![Next.js 16](https://img.shields.io/badge/Next.js-16-000000)
+![TypeScript](https://img.shields.io/badge/TypeScript-3178c6)
+![Smoke test 17/17](https://img.shields.io/badge/smoke%20test-17%2F17-2ea44f)
+![Licence MIT](https://img.shields.io/badge/licence-MIT-blue)
+
 [![Deploy on Railway](https://railway.com/button.svg)](https://railway.com/deploy/medusajs-2-full-stack-production-ready?referralCode=aceweb&utm_medium=integration&utm_source=template&utm_campaign=generic)
+
+![The deployed storefront, with search facets over the seeded catalogue](docs/images/storefront.png)
 
 A fork of [`medusajs/dtc-starter`](https://github.com/medusajs/dtc-starter), the
 monorepo `create-medusa-app` scaffolds today, with the infrastructure a real
@@ -59,8 +67,22 @@ variables to fill in**. The deploy form asks you for one thing, the bucket's
 region, which a template is not allowed to set. The first deploy then builds the
 four images, migrates, bootstraps and seeds a demo catalogue.
 
-Verified cold on 2026-11-15: all six services green in about four minutes, and
-`scripts/smoke-test.mjs` passing 17/17 against the deployed URLs, order included.
+Verified cold on 2026-11-15: all six services green in about four minutes in our
+test, and `scripts/smoke-test.mjs` passing 17/17 against the deployed URLs, order
+included. Build queue time varies, so treat four minutes as the shape of it
+rather than a guarantee.
+
+### First run
+
+1. Click **Deploy** and pick a region for the storage bucket.
+2. Wait for the services to go green.
+3. Open the **storefront** URL. It already has a catalogue, regions and search.
+4. Open the **medusa-backend** URL at `/app` for the admin dashboard.
+5. Sign in with `MEDUSA_ADMIN_EMAIL` and `MEDUSA_ADMIN_PASSWORD` from
+   medusa-backend's **Variables** tab. The password was generated for you.
+
+Copy that password somewhere before you start using the store. It is applied on
+the first boot only, so changing the variable later does not reset the account.
 
 ### Deploying this repository directly
 
@@ -88,6 +110,66 @@ a new project rather than one that already has other things in it. Change `REPO`
 to your own fork first, or you will deploy this repository rather than yours. The
 rest, including the exact variables and the template editor's quirks, is in
 [docs/railway-template.md](docs/railway-template.md).
+
+## Running it in production
+
+**Lost the admin password.** Create a second admin from inside the running
+container:
+
+```bash
+railway ssh --service medusa-backend
+node_modules/.bin/medusa user -e you@example.com -p 'a-new-password'
+```
+
+`medusa user` creates an account rather than resetting one, so give it an address
+that is not already registered. `railway ssh`, not `railway run`: `run` executes
+on your machine with the service's variables, and `DATABASE_URL` points at
+Railway's private network, which your laptop cannot reach.
+
+The dashboard's own "forgot password" link is not a route back in. Medusa only
+emits an `auth.password_reset` event and leaves sending the mail to the
+application, and this template ships no subscriber for it, so setting
+`SENDGRID_API_KEY` does not make that link work.
+
+**Customising the store.** This is a normal Medusa project, not a black box. Fork
+it, and work in `apps/backend/src` for the API, workflows, modules and admin
+extensions, and `apps/storefront/src` for the front end. `AGENTS.md` maps every
+directory to what belongs in it. Point your fork's `REPO` in
+`.railway/railway.ts` at itself, or just change the service's source repository
+in the Railway dashboard.
+
+**Turning off the demo catalogue.** Set `SEED_DEMO_DATA=false` before the first
+deploy for an empty store. Afterwards, delete the demo products in the admin;
+they are seeded once and do not come back on redeploy.
+
+**Backups.** Railway can take scheduled backups of the Postgres volume from the
+service's Settings tab, and that covers orders, customers and products. It does
+not cover the storage bucket, so uploaded media needs its own copy if you care
+about it: any S3 client pointed at the `S3_` variables will do.
+
+**Custom domains.** Add the domain in Railway, then update the variables that
+embed a URL, because several are baked in rather than read at request time.
+Group them by which domain changed, not by which service holds them.
+
+A new **backend** domain: `MEDUSA_BACKEND_URL`, `ADMIN_CORS` and `AUTH_CORS` on
+medusa-backend, and `NEXT_PUBLIC_MEDUSA_BACKEND_URL` on storefront.
+
+A new **storefront** domain: `STORE_CORS` and `AUTH_CORS` on medusa-backend,
+which name the storefront rather than themselves, and `NEXT_PUBLIC_BASE_URL` on
+storefront.
+
+The storefront has to rebuild for any of its own to take effect, since Next
+inlines them at build time.
+
+**Changing where media is served from.** `S3_FILE_URL` is written onto every
+product image as it is uploaded, so changing it later does not rewrite rows that
+already exist. Pick the public address before you build the catalogue.
+
+**Upgrading Medusa.** `scripts/sync-upstream.sh` and a three-way merge, described
+under [Keeping up with Medusa](#keeping-up-with-medusa). Migrations run from the
+entrypoint on the next deploy, and medusa-worker waits for a medusa-backend
+running the same build before it starts, so it never runs new code against a
+schema that has not been migrated yet.
 
 ## Run it locally
 

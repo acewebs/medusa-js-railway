@@ -31,10 +31,14 @@ if [ "${MEDUSA_RUN_MIGRATIONS:-true}" = "true" ]; then
   node_modules/.bin/medusa exec ./src/scripts/bootstrap.js
 fi
 
-# The worker gates on the server, which opens its port only once migrations and
-# bootstrap have finished. That makes a reachable port the schema's readiness
-# signal, so the worker never races a half-migrated database.
-wait_for "$MEDUSA_WAIT_FOR"
+# The worker gates on a server running its own build, not merely on an open
+# port. Railway keeps the previous deployment serving until the new one is
+# healthy, so on every deploy after the first the port is already open and
+# answered by the old backend while the new one is still migrating. Comparing
+# builds is what makes this correct on a redeploy and not just a cold start.
+if [ -n "$MEDUSA_WAIT_FOR" ]; then
+  node /app/docker/wait-for-deploy.mjs "$MEDUSA_WAIT_FOR"
+fi
 
 echo "==> medusa start (worker mode: ${MEDUSA_WORKER_MODE:-shared})"
 exec node_modules/.bin/medusa start

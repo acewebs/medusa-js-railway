@@ -7,11 +7,9 @@
  * before the database it migrates against exists. Waiting here means the first
  * deploy converges on its own rather than failing and needing a manual retry.
  *
- * Node's resolver is used rather than nc or pg_isready: Railway's private network
- * is IPv6 only and the busybox tools in a slim image disagree about whether they
- * support it.
+ * The socket probe itself lives in lib/net.mjs, shared with wait-for-deploy.mjs.
  */
-import net from 'node:net'
+import { parseHostPort, sleep, tryConnect } from './lib/net.mjs'
 
 const DEFAULT_PORTS = {
   'postgres:': 5432,
@@ -34,30 +32,8 @@ function parseTarget(target) {
     }
     return { host: url.hostname, port }
   }
-
-  // Bare host:port, and a bracketed IPv6 literal keeps its brackets off the host.
-  const match = target.match(/^\[?([^\]]+)\]?:(\d+)$/)
-  if (!match) {
-    throw new Error(`Expected a URL or host:port, got ${target}`)
-  }
-  return { host: match[1], port: Number(match[2]) }
+  return parseHostPort(target)
 }
-
-function tryConnect({ host, port }) {
-  return new Promise((resolve) => {
-    const socket = net.connect({ host, port, family: 0 })
-    const done = (ok) => {
-      socket.destroy()
-      resolve(ok)
-    }
-    socket.setTimeout(5_000)
-    socket.once('connect', () => done(true))
-    socket.once('timeout', () => done(false))
-    socket.once('error', () => done(false))
-  })
-}
-
-const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
 
 async function waitFor(target) {
   const { host, port } = parseTarget(target)
