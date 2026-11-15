@@ -17,10 +17,10 @@ Name, 38 characters:
 MedusaJS 2 Full Stack Production Ready
 ```
 
-Short description, 71 of the 75 characters available:
+Short description, 72 of the 75 characters available:
 
 ```text
-Server + worker, Next.js storefront, search, persistent media, no setup
+Server + worker, Next.js storefront, search with no extra service to run
 ```
 
 Category: **Starters**. Icon:
@@ -39,7 +39,9 @@ MedusaJS 2 Full Stack Production Ready is a complete commerce stack deployed the
 
 ## About Hosting MedusaJS 2 Full Stack Production Ready
 
-Medusa's deployment guide asks for two instances of the application, one serving the API in server mode and one running jobs and subscribers in worker mode, with Redis behind the event bus, workflow engine, locking and cache. Most one-click Medusa templates run a single process and skip some of those modules, which works until a long workflow starts competing with checkout requests. This template deploys the documented topology instead. Migrations, the first admin account, regions, a sales channel, the storefront's publishable key and a demo catalogue are all created on the first deploy, so what finishes building is a working store rather than an empty one waiting to be configured.
+Medusa's deployment guide asks for two instances of the application, one serving the API in server mode and one running jobs and subscribers in worker mode, with Redis behind the event bus, workflow engine, locking and cache. Most one-click Medusa templates run a single process and skip some of those modules, which works until a long workflow starts competing with checkout requests. This one deploys the documented topology instead.
+
+Migrations, the first admin account, regions, a sales channel, the storefront's publishable key and a demo catalogue are created on the first deploy, so what finishes building is a working store rather than an empty one to configure. That is checked rather than asserted: a smoke test logs in, uploads a file, searches the catalogue and places a real order against a deployment, and passes 17 of 17.
 
 ## Quick Start
 
