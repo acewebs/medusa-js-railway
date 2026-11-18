@@ -165,6 +165,19 @@ inlines them at build time.
 product image as it is uploaded, so changing it later does not rewrite rows that
 already exist. Pick the public address before you build the catalogue.
 
+**Search, and when to outgrow it.** Search is Medusa's own Search module on the
+Postgres provider, so the index lives in the same database as the catalogue and
+there is no search service to run, pay for or keep in sync. The index is declared
+in `apps/backend/src/search/product.ts`, and the storefront queries it over
+`/store/search` rather than through a vendor SDK.
+
+What gives out first at scale is not relevance, it is contention: facet counts
+and fuzzy matching run against the same Postgres instance that is taking checkout
+writes. Give that service more resources before reaching for another engine. If
+you do need one, the index definition names no provider and the storefront does
+not change, so the swap is configuration plus a reindex, described in
+[Using a different search provider](docs/railway-template.md#using-a-different-search-provider).
+
 **Upgrading Medusa.** `scripts/sync-upstream.sh` and a three-way merge, described
 under [Keeping up with Medusa](#keeping-up-with-medusa). Migrations run from the
 entrypoint on the next deploy, and medusa-worker waits for a medusa-backend

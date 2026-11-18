@@ -287,6 +287,59 @@ product image as it is uploaded. Changing it later does not rewrite the rows tha
 already exist, so pick the public address before the catalogue is built, or be
 ready to update those URLs by hand.
 
+## Using a different search provider
+
+Search is the `@medusajs/search` module. `defineConfig` registers it with the
+Postgres provider on its own, which is why `medusa-config.ts` configures no search
+module at all and why the template runs no search service: the index is `tsvector`
+and `pg_trgm` in the store's own PostgreSQL.
+
+Two things keep the provider replaceable without touching application code.
+`apps/backend/src/search/product.ts` declares its fields with `search.define` and
+names no provider, and the storefront queries `/store/search` through
+`@medusajs/instantsearch-adapter` rather than a vendor client. Neither changes
+when the provider does.
+
+Registering the module yourself replaces that default registration, so list
+Postgres again unless you mean to drop it:
+
+```ts
+{
+  resolve: '@medusajs/medusa/search',
+  options: {
+    providers: [
+      { resolve: '@medusajs/medusa/search-postgres', id: 'postgres', options: { engine: 'native' } },
+      { resolve: './src/modules/search-elsewhere', id: 'elsewhere' },
+    ],
+    default_provider: 'search-elsewhere',
+  },
+}
+```
+
+`default_provider`, and the optional `provider` on an index definition, take the
+provider class's static `identifier`, not the `id` written here. One registered
+provider needs no `default_provider`; two or more do, and an unregistered
+identifier throws at boot rather than on the first query.
+
+The swap itself runs as an index migration. Each index version records the
+provider that built it, so changing it creates a new physical index, seeds it from
+the graph and makes it active only once it is filled, leaving the old one serving
+until then. On this template `medusa db:migrate` plans that from medusa-backend's
+entrypoint, but **medusa-worker is what seeds it**, because seeding on boot runs
+in worker mode only. A deployment cut down to the server alone migrates and then
+serves an empty index.
+
+What does not exist, as of Medusa 2.22, is an official Meilisearch or Algolia
+provider. The three that do are `search-postgres`, `search-local` (Orama, last
+published for 2.19) and the built-in `search-medusa`, which needs Medusa Cloud
+credentials. Anything else is a provider you write and maintain against
+`ISearchProvider`: index upsert, document upsert and delete, queries with filters,
+sorting and facets, and the migration and reseed path above. That is worth doing
+for a catalogue that has outgrown PostgreSQL, and not before. The first symptom of
+outgrowing it is contention rather than bad results, since facet counts and fuzzy
+matching compete with checkout writes for one database, so raise that service's
+resources before concluding the engine is the problem.
+
 ## Before publishing
 
 Deploy the template into a fresh, empty project and check all of it. A project
