@@ -9,7 +9,7 @@ into each one, or publishing is refused for whichever section it cannot match.
 ## MedusaJS 2 Full Stack Production Ready
 
 Published at
-<https://railway.com/deploy/medusajs-2-full-stack-production-ready>.
+<https://railway.com/deploy/medusajs-2-full-stack-production-ready?referralCode=aceweb&utm_medium=integration&utm_source=template&utm_campaign=generic>.
 
 Name, 38 characters:
 

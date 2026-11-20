@@ -608,7 +608,7 @@ Two listings from this one repository, sharing its Dockerfiles and docs:
 
 - **MedusaJS 2 Production Ready**: medusa-backend, medusa-worker, Postgres, Redis.
   Four services, for someone building their own storefront. Not published yet.
-- **[MedusaJS 2 Full Stack Production Ready](https://railway.com/deploy/medusajs-2-full-stack-production-ready)**:
+- **[MedusaJS 2 Full Stack Production Ready](https://railway.com/deploy/medusajs-2-full-stack-production-ready?referralCode=aceweb&utm_medium=integration&utm_source=template&utm_campaign=generic)**:
   the above plus storefront, media-proxy and the bucket. Published 2026-11-14,
   verified cold on 2026-11-15.
 
